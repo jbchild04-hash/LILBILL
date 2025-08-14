@@ -1,9 +1,8 @@
 import os
-import time
-import tweepy
 import requests
 import random
 from datetime import datetime
+import tweepy
 
 # --------------------
 # Load environment variables
@@ -25,7 +24,7 @@ if missing_vars:
 print("✅ All environment variables found.")
 
 # --------------------
-# Twitter authentication using Tweepy Client
+# Twitter authentication (read-only, free tier)
 # --------------------
 try:
     client = tweepy.Client(
@@ -40,7 +39,7 @@ try:
     print(f"✅ Twitter authentication successful. Logged in as @{twitter_username}")
 except Exception as e:
     print(f"❌ Twitter authentication failed: {e}")
-    client = None  # Prevent main loop from crashing
+    client = None
 
 # --------------------
 # Jacob Childers Persona
@@ -79,65 +78,37 @@ def groq_response(user_prompt):
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
-    except requests.HTTPError as http_err:
-        print(f"[Groq API HTTP Error] {http_err} | Response: {response.text}")
-        return "Not sure what to say right now."
     except Exception as e:
         print(f"[Groq API Error] {e}")
         return "Not sure what to say right now."
 
 # --------------------
-# Post hourly tweet
+# Free-tier safe functions
 # --------------------
-def post_hourly_tweet():
+def fetch_recent_tweets(topic="Trump"):
+    """Fetch recent tweets only (cannot post or reply)"""
     if not client:
-        print("❌ Skipping hourly tweet because Twitter auth failed.")
+        print("❌ Skipping fetch because Twitter auth failed.")
         return
-    tweet_text = groq_response("Write a provocative tweet about the U.S. or politics.")
+    query = topic + " -is:retweet"
     try:
-        client.create_tweet(text=tweet_text)
-        print(f"[{datetime.now()}] ✅ Posted hourly tweet: {tweet_text}")
+        tweets = client.search_recent_tweets(query=query, max_results=5)
+        if tweets.data:
+            for tweet in tweets.data:
+                print(f"[{datetime.now()}] 📰 {tweet.text}")
+        else:
+            print("No recent tweets found.")
     except Exception as e:
-        print(f"[Hourly Tweet Error] {e}")
+        print(f"[Fetch Error] {e}")
 
 # --------------------
-# Reply to trending tweets
-# --------------------
-def reply_to_trending():
-    if not client:
-        print("❌ Skipping trending replies because Twitter auth failed.")
-        return
-    topics = ["Biden", "Trump", "inflation", "election", "economy", "government", "congress"]
-    query = random.choice(topics) + " -is:retweet"
-
-    try:
-        tweets = client.search_recent_tweets(query=query, max_results=3, tweet_fields=["author_id"])
-        if not tweets.data:
-            return
-        for tweet in tweets.data:
-            if str(tweet.author_id) == user.data.id:
-                continue  # skip own tweets
-            reply_text = groq_response(f"Reply provocatively to this tweet: {tweet.text}")
-            client.create_tweet(text=reply_text, in_reply_to_tweet_id=tweet.id)
-            print(f"[{datetime.now()}] 💬 Replied to tweet ID {tweet.id}: {reply_text}")
-            time.sleep(random.randint(45, 90))
-    except Exception as e:
-        print(f"[Trending Reply Error] {e}")
-
-# --------------------
-# Main loop
+# Main loop (read-only)
 # --------------------
 if __name__ == "__main__":
-    last_hourly = 0
+    topics = ["Biden", "Trump", "inflation", "election", "economy"]
     while True:
-        now = time.time()
-
-        # Post hourly
-        if now - last_hourly >= 3600:
-            post_hourly_tweet()
-            last_hourly = now
-
-        # Reply to trending every 15 minutes
-        reply_to_trending()
-
-        time.sleep(900)  # Wait 15 min before checking again
+        topic = random.choice(topics)
+        fetch_recent_tweets(topic)
+        # Wait 15 min before checking again
+        import time
+        time.sleep(900)
