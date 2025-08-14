@@ -119,3 +119,77 @@ def groq_response(user_prompt):
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[Groq API Error] {e}")
+        return "Not sure what to say right now."
+
+# --------------------
+# Post tweet
+# --------------------
+def post_tweet(text):
+    global access_token
+    url = "https://api.twitter.com/2/tweets"
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    resp = requests.post(url, headers=headers, json={"text": text})
+    if resp.status_code == 401:  # token expired
+        access_token = refresh_access_token()
+        headers["Authorization"] = f"Bearer {access_token}"
+        resp = requests.post(url, headers=headers, json={"text": text})
+    resp.raise_for_status()
+    print(f"[{datetime.now()}] ✅ Tweet posted: {text}")
+
+# --------------------
+# Search recent tweets for replies
+# --------------------
+def search_recent(query, max_results=3):
+    global access_token
+    url = f"https://api.twitter.com/2/tweets/search/recent?query={query}&max_results={max_results}&tweet.fields=author_id,text"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    resp = requests.get(url, headers=headers)
+    if resp.status_code == 401:
+        access_token = refresh_access_token()
+        headers["Authorization"] = f"Bearer {access_token}"
+        resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json().get("data", [])
+
+# --------------------
+# Reply to tweet
+# --------------------
+def reply_to_tweet(tweet_id, text):
+    global access_token
+    post_data = {"text": text, "reply": {"in_reply_to_tweet_id": tweet_id}}
+    url = "https://api.twitter.com/2/tweets"
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    resp = requests.post(url, headers=headers, json=post_data)
+    if resp.status_code == 401:
+        access_token = refresh_access_token()
+        headers["Authorization"] = f"Bearer {access_token}"
+        resp = requests.post(url, headers=headers, json=post_data)
+    resp.raise_for_status()
+    print(f"[{datetime.now()}] 💬 Replied to tweet {tweet_id}: {text}")
+
+# --------------------
+# Main loop
+# --------------------
+if __name__ == "__main__":
+    last_hourly = 0
+    while True:
+        now = time.time()
+
+        # Post hourly tweet
+        if now - last_hourly >= 3600:
+            text = groq_response("Write a provocative tweet about the U.S. or politics.")
+            post_tweet(text)
+            last_hourly = now
+
+        # Reply to trending every 15 min
+        topics = ["Biden", "Trump", "inflation", "election", "economy", "government", "congress"]
+        query = random.choice(topics) + " -is:retweet"
+        tweets = search_recent(query)
+        for tweet in tweets:
+            reply_text = groq_response(f"Reply provocatively to this tweet: {tweet['text']}")
+            reply_to_tweet(tweet['id'], reply_text)
+            time.sleep(random.randint(45, 90))
+
+        time.sleep(900)
