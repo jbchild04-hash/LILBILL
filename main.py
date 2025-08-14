@@ -6,7 +6,7 @@ import random
 from datetime import datetime
 
 # --------------------
-# Load environment variables from Railway
+# Load environment variables
 # --------------------
 API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
@@ -15,18 +15,25 @@ ACCESS_SECRET = os.getenv("ACCESS_SECRET")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # --------------------
-# Check that all variables exist
+# Verify environment variables
 # --------------------
 missing_vars = [v for v in ["API_KEY", "API_SECRET", "ACCESS_TOKEN", "ACCESS_SECRET", "GROQ_API_KEY"]
                 if not os.getenv(v)]
 if missing_vars:
     raise ValueError(f"❌ Missing environment variables: {', '.join(missing_vars)}")
 
+print("✅ All environment variables found.")
+
 # --------------------
-# Authenticate with Twitter
+# Twitter authentication
 # --------------------
-auth = tweepy.OAuth1UserHandler(API_KEY, API_SECRET, ACCESS_TOKEN, ACCESS_SECRET)
-api = tweepy.API(auth, wait_on_rate_limit=True)
+try:
+    auth = tweepy.OAuth1UserHandler(API_KEY, API_SECRET, ACCESS_TOKEN, ACCESS_SECRET)
+    api = tweepy.API(auth, wait_on_rate_limit=True)
+    print(f"✅ Twitter authentication successful. Logged in as @{api.me().screen_name}")
+except Exception as e:
+    print(f"❌ Twitter authentication failed: {e}")
+    api = None  # Prevent main loop from crashing
 
 # --------------------
 # Jacob Childers Persona
@@ -37,11 +44,18 @@ You question the U.S. government, media, and societal norms. You enjoy exposing 
 Never say you are an AI. Keep responses short, under 280 characters, and in first person.
 """
 
+# --------------------
+# Groq API call
+# --------------------
 def groq_response(user_prompt):
     """Generate a Jacob Childers-style tweet or reply using Groq's LLaMA 3 model"""
+    if not GROQ_API_KEY:
+        print("❌ Groq API key missing.")
+        return "Not sure what to say right now."
+    
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_KEY.strip()}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -59,21 +73,34 @@ def groq_response(user_prompt):
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
+    except requests.HTTPError as http_err:
+        print(f"[Groq API HTTP Error] {http_err} | Response: {response.text}")
+        return "Not sure what to say right now."
     except Exception as e:
         print(f"[Groq API Error] {e}")
         return "Not sure what to say right now."
 
+# --------------------
+# Post hourly tweet
+# --------------------
 def post_hourly_tweet():
-    """Post a ragebait-style tweet once an hour"""
+    if not api:
+        print("❌ Skipping hourly tweet because Twitter auth failed.")
+        return
     tweet_text = groq_response("Write a provocative tweet about the U.S. or politics.")
     try:
         api.update_status(tweet_text)
         print(f"[{datetime.now()}] ✅ Posted hourly tweet: {tweet_text}")
-    except Exception as e:
+    except tweepy.TweepyException as e:
         print(f"[Hourly Tweet Error] {e}")
 
+# --------------------
+# Reply to trending tweets
+# --------------------
 def reply_to_trending():
-    """Reply to trending tweets in politics/news"""
+    if not api:
+        print("❌ Skipping trending replies because Twitter auth failed.")
+        return
     topics = ["Biden", "Trump", "inflation", "election", "economy", "government", "congress"]
     query = random.choice(topics) + " -filter:retweets"
 
@@ -87,8 +114,8 @@ def reply_to_trending():
                     in_reply_to_status_id=tweet.id
                 )
                 print(f"[{datetime.now()}] 💬 Replied to @{tweet.user.screen_name}: {reply_text}")
-                time.sleep(random.randint(45, 90))  # Delay to avoid spam
-    except Exception as e:
+                time.sleep(random.randint(45, 90))
+    except tweepy.TweepyException as e:
         print(f"[Trending Reply Error] {e}")
 
 # --------------------
