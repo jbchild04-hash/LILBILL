@@ -1,40 +1,22 @@
 import os
-import time
-import tweepy
+import base64
+import hashlib
+import secrets
 import requests
 import random
+import time
 from datetime import datetime
 
 # --------------------
 # Load environment variables
 # --------------------
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
-ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
-ACCESS_SECRET = os.getenv("ACCESS_SECRET")
+CLIENT_ID = os.getenv("CLIENT_ID")
+REDIRECT_URI = os.getenv("REDIRECT_URI")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+SCOPES = "tweet.read tweet.write users.read offline.access"
 
-# --------------------
-# Verify environment variables
-# --------------------
-missing_vars = [v for v in ["API_KEY", "API_SECRET", "ACCESS_TOKEN", "ACCESS_SECRET", "GROQ_API_KEY"]
-                if not os.getenv(v)]
-if missing_vars:
-    raise ValueError(f"❌ Missing environment variables: {', '.join(missing_vars)}")
-
-print("✅ All environment variables found.")
-
-# --------------------
-# Twitter authentication (OAuth 1.0a)
-# --------------------
-try:
-    auth = tweepy.OAuth1UserHandler(API_KEY, API_SECRET, ACCESS_TOKEN, ACCESS_SECRET)
-    api = tweepy.API(auth, wait_on_rate_limit=True)
-    twitter_user = api.verify_credentials()
-    print(f"✅ Twitter authentication successful. Logged in as @{twitter_user.screen_name}")
-except Exception as e:
-    print(f"❌ Twitter authentication failed: {e}")
-    api = None  # Prevent main loop from crashing
+if not all([CLIENT_ID, REDIRECT_URI, GROQ_API_KEY]):
+    raise ValueError("❌ Missing CLIENT_ID, REDIRECT_URI, or GROQ_API_KEY")
 
 # --------------------
 # Jacob Childers Persona
@@ -46,13 +28,68 @@ Never say you are an AI. Keep responses short, under 280 characters, and in firs
 """
 
 # --------------------
+# PKCE helpers
+# --------------------
+def generate_pkce_pair():
+    code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode("utf-8")
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b'=').decode("utf-8")
+    return code_verifier, code_challenge
+
+code_verifier, code_challenge = generate_pkce_pair()
+
+# --------------------
+# Step 1: Authorization URL
+# --------------------
+auth_url = (
+    f"https://twitter.com/i/oauth2/authorize?"
+    f"response_type=code&client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&"
+    f"scope={SCOPES}&state=state123&code_challenge={code_challenge}&code_challenge_method=S256"
+)
+print("Open this URL in your browser and authorize the app:")
+print(auth_url)
+
+auth_code = input("Enter the authorization code from the URL redirect: ").strip()
+
+# --------------------
+# Step 2: Exchange code for access token
+# --------------------
+token_url = "https://api.twitter.com/2/oauth2/token"
+data = {
+    "grant_type": "authorization_code",
+    "code": auth_code,
+    "redirect_uri": REDIRECT_URI,
+    "code_verifier": code_verifier,
+    "client_id": CLIENT_ID
+}
+headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+resp = requests.post(token_url, data=data, headers=headers)
+resp.raise_for_status()
+tokens = resp.json()
+access_token = tokens["access_token"]
+refresh_token = tokens.get("refresh_token")
+print("✅ Access token received")
+
+# --------------------
+# Helper: Refresh token
+# --------------------
+def refresh_access_token(refresh_token):
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLIENT_ID
+    }
+    resp = requests.post(token_url, data=data, headers=headers)
+    resp.raise_for_status()
+    new_tokens = resp.json()
+    return new_tokens["access_token"], new_tokens.get("refresh_token")
+
+# --------------------
 # Groq API call
 # --------------------
 def groq_response(user_prompt):
-    if not GROQ_API_KEY:
-        print("❌ Groq API key missing.")
-        return "Not sure what to say right now."
-    
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY.strip()}",
@@ -67,56 +104,60 @@ def groq_response(user_prompt):
         "max_tokens": 80,
         "temperature": 0.9
     }
-
     try:
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
-    except requests.HTTPError as http_err:
-        print(f"[Groq API HTTP Error] {http_err} | Response: {response.text}")
-        return "Not sure what to say right now."
     except Exception as e:
         print(f"[Groq API Error] {e}")
         return "Not sure what to say right now."
 
 # --------------------
-# Post hourly tweet
+# Post tweet
 # --------------------
-def post_hourly_tweet():
-    if not api:
-        print("❌ Skipping hourly tweet because Twitter auth failed.")
-        return
-    tweet_text = groq_response("Write a provocative tweet about the U.S. or politics.")
-    try:
-        api.update_status(tweet_text)
-        print(f"[{datetime.now()}] ✅ Posted hourly tweet: {tweet_text}")
-    except Exception as e:
-        print(f"[Hourly Tweet Error] {e}")
+def post_tweet(text):
+    global access_token, refresh_token
+    url = "https://api.twitter.com/2/tweets"
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    resp = requests.post(url, headers=headers, json={"text": text})
+    if resp.status_code == 401 and refresh_token:
+        access_token, refresh_token = refresh_access_token(refresh_token)
+        headers["Authorization"] = f"Bearer {access_token}"
+        resp = requests.post(url, headers=headers, json={"text": text})
+    resp.raise_for_status()
+    print(f"[{datetime.now()}] ✅ Tweet posted: {text}")
 
 # --------------------
-# Reply to trending tweets
+# Search recent tweets (for trending reply)
 # --------------------
-def reply_to_trending():
-    if not api:
-        print("❌ Skipping trending replies because Twitter auth failed.")
-        return
-    topics = ["Biden", "Trump", "inflation", "election", "economy", "government", "congress"]
-    query = random.choice(topics) + " -filter:retweets"
+def search_recent(query, max_results=3):
+    global access_token, refresh_token
+    url = f"https://api.twitter.com/2/tweets/search/recent?query={query}&max_results={max_results}&tweet.fields=author_id,text"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    resp = requests.get(url, headers=headers)
+    if resp.status_code == 401 and refresh_token:
+        access_token, refresh_token = refresh_access_token(refresh_token)
+        headers["Authorization"] = f"Bearer {access_token}"
+        resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json().get("data", [])
 
-    try:
-        tweets = api.search_tweets(q=query, count=3, lang="en", result_type="popular")
-        for tweet in tweets:
-            if tweet.user.screen_name.lower() != twitter_user.screen_name.lower():
-                reply_text = groq_response(f"Reply provocatively to this tweet: {tweet.text}")
-                api.update_status(
-                    status=f"@{tweet.user.screen_name} {reply_text}",
-                    in_reply_to_status_id=tweet.id
-                )
-                print(f"[{datetime.now()}] 💬 Replied to @{tweet.user.screen_name}: {reply_text}")
-                time.sleep(random.randint(45, 90))  # Delay to avoid spam
-    except Exception as e:
-        print(f"[Trending Reply Error] {e}")
+# --------------------
+# Reply to tweet
+# --------------------
+def reply_to_tweet(tweet_id, text):
+    post_tweet_data = {"text": text, "reply": {"in_reply_to_tweet_id": tweet_id}}
+    post_tweet_api_url = "https://api.twitter.com/2/tweets"
+    global access_token, refresh_token
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    resp = requests.post(post_tweet_api_url, headers=headers, json=post_tweet_data)
+    if resp.status_code == 401 and refresh_token:
+        access_token, refresh_token = refresh_access_token(refresh_token)
+        headers["Authorization"] = f"Bearer {access_token}"
+        resp = requests.post(post_tweet_api_url, headers=headers, json=post_tweet_data)
+    resp.raise_for_status()
+    print(f"[{datetime.now()}] 💬 Replied to tweet {tweet_id}: {text}")
 
 # --------------------
 # Main loop
@@ -126,12 +167,19 @@ if __name__ == "__main__":
     while True:
         now = time.time()
 
-        # Post hourly
+        # Post hourly tweet
         if now - last_hourly >= 3600:
-            post_hourly_tweet()
+            text = groq_response("Write a provocative tweet about the U.S. or politics.")
+            post_tweet(text)
             last_hourly = now
 
-        # Reply to trending every 15 minutes
-        reply_to_trending()
+        # Reply to trending every 15 min
+        topics = ["Biden", "Trump", "inflation", "election", "economy", "government", "congress"]
+        query = random.choice(topics) + " -is:retweet"
+        tweets = search_recent(query)
+        for tweet in tweets:
+            reply_text = groq_response(f"Reply provocatively to this tweet: {tweet['text']}")
+            reply_to_tweet(tweet['id'], reply_text)
+            time.sleep(random.randint(45, 90))
 
-        time.sleep(900)  # Wait 15 min before checking again
+        time.sleep(900)
