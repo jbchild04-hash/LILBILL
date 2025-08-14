@@ -1,7 +1,7 @@
 import os
 import time
 import tweepy
-import openai
+import requests
 import random
 from datetime import datetime
 
@@ -12,12 +12,12 @@ API_KEY = os.getenv("API_KEY")
 API_SECRET = os.getenv("API_SECRET")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 ACCESS_SECRET = os.getenv("ACCESS_SECRET")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # --------------------
 # Check that all variables exist
 # --------------------
-missing_vars = [v for v in ["API_KEY", "API_SECRET", "ACCESS_TOKEN", "ACCESS_SECRET", "OPENAI_API_KEY"]
+missing_vars = [v for v in ["API_KEY", "API_SECRET", "ACCESS_TOKEN", "ACCESS_SECRET", "GROQ_API_KEY"]
                 if not os.getenv(v)]
 if missing_vars:
     raise ValueError(f"❌ Missing environment variables: {', '.join(missing_vars)}")
@@ -29,11 +29,6 @@ auth = tweepy.OAuth1UserHandler(API_KEY, API_SECRET, ACCESS_TOKEN, ACCESS_SECRET
 api = tweepy.API(auth, wait_on_rate_limit=True)
 
 # --------------------
-# Authenticate with OpenAI
-# --------------------
-openai.api_key = OPENAI_API_KEY
-
-# --------------------
 # Jacob Childers Persona
 # --------------------
 JACOB_PROMPT = """
@@ -42,22 +37,35 @@ You question the U.S. government, media, and societal norms. You enjoy exposing 
 Never say you are an AI. Keep responses short, under 280 characters, and in first person.
 """
 
-def gpt_response(user_prompt):
-    """Generate a Jacob Childers-style tweet or reply"""
-    completion = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
+def groq_response(user_prompt):
+    """Generate a Jacob Childers-style tweet or reply using Groq's LLaMA 3 model"""
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama3-70b-8192",
+        "messages": [
             {"role": "system", "content": JACOB_PROMPT},
             {"role": "user", "content": user_prompt}
         ],
-        max_tokens=80,
-        temperature=0.9
-    )
-    return completion.choices[0].message["content"].strip()
+        "max_tokens": 80,
+        "temperature": 0.9
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[Groq API Error] {e}")
+        return "Not sure what to say right now."
 
 def post_hourly_tweet():
     """Post a ragebait-style tweet once an hour"""
-    tweet_text = gpt_response("Write a provocative tweet about the U.S. or politics.")
+    tweet_text = groq_response("Write a provocative tweet about the U.S. or politics.")
     try:
         api.update_status(tweet_text)
         print(f"[{datetime.now()}] ✅ Posted hourly tweet: {tweet_text}")
@@ -73,7 +81,7 @@ def reply_to_trending():
         tweets = api.search_tweets(q=query, count=3, lang="en", result_type="popular")
         for tweet in tweets:
             if tweet.user.screen_name.lower() != api.me().screen_name.lower():
-                reply_text = gpt_response(f"Reply provocatively to this tweet: {tweet.text}")
+                reply_text = groq_response(f"Reply provocatively to this tweet: {tweet.text}")
                 api.update_status(
                     status=f"@{tweet.user.screen_name} {reply_text}",
                     in_reply_to_status_id=tweet.id
