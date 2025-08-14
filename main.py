@@ -25,15 +25,22 @@ if missing_vars:
 print("✅ All environment variables found.")
 
 # --------------------
-# Twitter authentication
+# Twitter authentication using Tweepy Client
 # --------------------
 try:
-    auth = tweepy.OAuth1UserHandler(API_KEY, API_SECRET, ACCESS_TOKEN, ACCESS_SECRET)
-    api = tweepy.API(auth, wait_on_rate_limit=True)
-    print(f"✅ Twitter authentication successful. Logged in as @{api.me().screen_name}")
+    client = tweepy.Client(
+        consumer_key=API_KEY,
+        consumer_secret=API_SECRET,
+        access_token=ACCESS_TOKEN,
+        access_token_secret=ACCESS_SECRET,
+        wait_on_rate_limit=True
+    )
+    user = client.get_me()
+    twitter_username = user.data.username
+    print(f"✅ Twitter authentication successful. Logged in as @{twitter_username}")
 except Exception as e:
     print(f"❌ Twitter authentication failed: {e}")
-    api = None  # Prevent main loop from crashing
+    client = None  # Prevent main loop from crashing
 
 # --------------------
 # Jacob Childers Persona
@@ -48,7 +55,6 @@ Never say you are an AI. Keep responses short, under 280 characters, and in firs
 # Groq API call
 # --------------------
 def groq_response(user_prompt):
-    """Generate a Jacob Childers-style tweet or reply using Groq's LLaMA 3 model"""
     if not GROQ_API_KEY:
         print("❌ Groq API key missing.")
         return "Not sure what to say right now."
@@ -84,38 +90,38 @@ def groq_response(user_prompt):
 # Post hourly tweet
 # --------------------
 def post_hourly_tweet():
-    if not api:
+    if not client:
         print("❌ Skipping hourly tweet because Twitter auth failed.")
         return
     tweet_text = groq_response("Write a provocative tweet about the U.S. or politics.")
     try:
-        api.update_status(tweet_text)
+        client.create_tweet(text=tweet_text)
         print(f"[{datetime.now()}] ✅ Posted hourly tweet: {tweet_text}")
-    except tweepy.TweepyException as e:
+    except Exception as e:
         print(f"[Hourly Tweet Error] {e}")
 
 # --------------------
 # Reply to trending tweets
 # --------------------
 def reply_to_trending():
-    if not api:
+    if not client:
         print("❌ Skipping trending replies because Twitter auth failed.")
         return
     topics = ["Biden", "Trump", "inflation", "election", "economy", "government", "congress"]
-    query = random.choice(topics) + " -filter:retweets"
+    query = random.choice(topics) + " -is:retweet"
 
     try:
-        tweets = api.search_tweets(q=query, count=3, lang="en", result_type="popular")
-        for tweet in tweets:
-            if tweet.user.screen_name.lower() != api.me().screen_name.lower():
-                reply_text = groq_response(f"Reply provocatively to this tweet: {tweet.text}")
-                api.update_status(
-                    status=f"@{tweet.user.screen_name} {reply_text}",
-                    in_reply_to_status_id=tweet.id
-                )
-                print(f"[{datetime.now()}] 💬 Replied to @{tweet.user.screen_name}: {reply_text}")
-                time.sleep(random.randint(45, 90))
-    except tweepy.TweepyException as e:
+        tweets = client.search_recent_tweets(query=query, max_results=3, tweet_fields=["author_id"])
+        if not tweets.data:
+            return
+        for tweet in tweets.data:
+            if str(tweet.author_id) == user.data.id:
+                continue  # skip own tweets
+            reply_text = groq_response(f"Reply provocatively to this tweet: {tweet.text}")
+            client.create_tweet(text=reply_text, in_reply_to_tweet_id=tweet.id)
+            print(f"[{datetime.now()}] 💬 Replied to tweet ID {tweet.id}: {reply_text}")
+            time.sleep(random.randint(45, 90))
+    except Exception as e:
         print(f"[Trending Reply Error] {e}")
 
 # --------------------
